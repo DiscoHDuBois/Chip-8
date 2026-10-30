@@ -362,7 +362,7 @@ term_restore(void) {
     printf("\x1b[?25h\n");
     fflush(stdout);
 }
-
+//static volatile sig_atomic_t quit nell'handler
 static void
 on_signal(int sig) {
     (void) sig;
