@@ -165,6 +165,16 @@ RET          →   SP -= 2
 Il CHIP-8 non ha istruzioni `PUSH`/`POP` per i dati, a differenza dell'x86.
 Inoltre lo stack dell'x86 cresce verso il basso.
 
+Lo stack ha spazio per 16 livelli (`0xEA0–0xEBF`, il COSMAC VIP ne aveva 12).
+Senza controlli, superato `0xFFF` il mascheramento a 12 bit farebbe ripartire lo stack
+da `0x000`: dopo 216 livelli verrebbe sovrascritto il font e dopo 432 il programma.
+Una `CALL` di troppo (overflow) o un `RET` senza `CALL` (underflow)
+fermano l'emulatore con un messaggio che riporta `PC` e istruzione:
+
+```
+CPU fermata: stack overflow (troppe CALL annidate) a PC=200 (2200 CALL 0x200), SP=EC0
+```
+
 Nel codice: `stack_push()` e `stack_pop()`.
 
 ### Registro indice — `I`
@@ -384,7 +394,8 @@ Per esempio `ADD V0, 0x01` → formato `7XKK` → `X=0`, `KK=01` → `7001`.
 | `memory_init/read/write` | RAM da 4 KB, indirizzi mascherati a 12 bit           |
 | `cpu_reset`         | Azzera i registri, `PC = 0x200`, `SP = 0xEA0`, carica il font |
 | `cpu_cycle`         | Fetch – decode – execute di una istruzione                |
-| `stack_push/pop`    | Salvataggio e ripristino del `PC` per `CALL`/`RET`        |
+| `stack_push/pop`    | Salvataggio e ripristino del `PC` per `CALL`/`RET`, con controllo dei limiti |
+| `cpu_halt`          | Ferma la CPU in caso di errore (es. stack overflow)       |
 | `disassemble`       | Codice macchina → mnemonico assembly                      |
 | `disassemble_rom`   | Disassembla un'intera ROM (opzione `-d`)                  |
 | `rom_load/demo_load`| Carica il programma a `0x200`                             |
@@ -403,6 +414,5 @@ Per esempio `ADD V0, 0x01` → formato `7XKK` → `X=0`, `KK=01` → `7001`.
 - **Tastiera**: il terminale non segnala il rilascio dei tasti, quindi ogni tasto resta
   "premuto" per 10 frame.
 - **ESC**: anche le frecce inviano il carattere ESC, quindi chiudono l'emulatore.
-- **Stack**: non c'è controllo di overflow/underflow.
 - **Disassemblatore**: gli sprite memorizzati in mezzo al codice vengono letti come istruzioni
   (compaiono come `DW` o come istruzioni senza senso).

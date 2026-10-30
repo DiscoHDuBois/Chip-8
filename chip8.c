@@ -38,6 +38,8 @@ typedef union { /*
 #define FONT_START       0x050   // sprite delle cifre 0-F
 #define PROGRAM_START    0x200   // 0x000-0x1FF era riservato all'interprete
 #define STACK_START      0xEA0   // stack in memoria, come sul COSMAC VIP
+#define STACK_LEVELS     16      // CALL annidate massime (il VIP ne aveva 12)
+#define STACK_END        (STACK_START + 2 * STACK_LEVELS)
 #define SCREEN_W         64
 #define SCREEN_H         32
 #define CYCLES_PER_FRAME 10      // ~600 istruzioni/s a 60 Hz
@@ -78,6 +80,7 @@ static chip8regset cpu;
 static byte screen[SCREEN_H][SCREEN_W];  // 1 = pixel acceso
 static byte keys[0x10];                  // >0 = tasto premuto
 static int key_event = -1;
+static const char *cpu_error;            // != NULL --> 'arresto della CPU
 
 // Sprite 4x5 delle cifre esadecimali, usati da LD F, Vx
 static const byte fontset[80] = {
@@ -172,18 +175,21 @@ disassemble(unsigned short op, char *out, size_t len) {
 }
 
 //Stack: il PC viene salvato in memoria un byte alla volta
-static void
+
+static int
 stack_push(word value) {
+    if (cpu.sp.WORD >= STACK_END) return 0;                  // overflow
     memory_write(cpu.sp, value.BYTE.high); cpu.sp.WORD++;
     memory_write(cpu.sp, value.BYTE.low);  cpu.sp.WORD++;
+    return 1;
 }
-static word
-stack_pop(void) {
-    word value;
+static int
+stack_pop(word *value) {
+    if (cpu.sp.WORD <= STACK_START) return 0;                // underflow: RET senza CALL
     cpu.sp.WORD -= 2;
-    value.BYTE.high = memory_read(cpu.sp.WORD);
-    value.BYTE.low  = memory_read(cpu.sp.WORD + 1);
-    return value;
+    value->BYTE.high = memory_read(cpu.sp.WORD);
+    value->BYTE.low  = memory_read(cpu.sp.WORD + 1);
+    return 1;
 }
 
 static void
@@ -195,8 +201,16 @@ cpu_reset(void) {
     memcpy(memory + FONT_START, fontset, sizeof fontset);
 }
 
-//Ciclo Fetch - Decode - Execute di una singola istruzione
-static void
+// Ferma la CPU lasciando il PC sull'istruzione che ha causato l'errore
+static int
+cpu_halt(const char *reason) {
+    cpu_error = reason;
+    cpu.pc.WORD -= 2;
+    return 0;
+}
+
+//Ciclo Fetch - Decode - Execute di una singola istruzione (ritorna 0 se la CPU si ferma)
+static int
 cpu_cycle(void) {
     // FETCH
     cpu.operand.BYTE.high = memory_read(cpu.pc.WORD);
@@ -214,10 +228,14 @@ cpu_cycle(void) {
     switch (op >> 12) {
     case 0x0:
         if (op == 0x00E0) memset(screen, 0, sizeof screen);       // CLS
-        else if (op == 0x00EE) cpu.pc = stack_pop();              // RET
+        else if (op == 0x00EE && !stack_pop(&cpu.pc))             // RET
+            return cpu_halt("stack underflow (RET senza CALL)");
         break;                                                    // SYS ignorata (codice nativo 1802)
     case 0x1: cpu.pc.WORD = nnn; break;                           // JP
-    case 0x2: stack_push(cpu.pc); cpu.pc.WORD = nnn; break;       // CALL
+    case 0x2:                                                     // CALL
+        if (!stack_push(cpu.pc)) return cpu_halt("stack overflow (troppe CALL annidate)");
+        cpu.pc.WORD = nnn;
+        break;
     case 0x3: if (v[x] == kk) cpu.pc.WORD += 2; break;            // SE  Vx, kk
     case 0x4: if (v[x] != kk) cpu.pc.WORD += 2; break;            // SNE Vx, kk
     case 0x5: if (v[x] == v[y]) cpu.pc.WORD += 2; break;          // SE  Vx, Vy
@@ -298,6 +316,7 @@ cpu_cycle(void) {
         }
         break;
     }
+    return 1;
 }
 
 //Caricamento programma
@@ -429,17 +448,24 @@ int main(int argc, char *argv[]) {
     srand((unsigned) time(NULL));
     term_setup();
 
-    while (input_poll()) {
-        for (int c = 0; c < CYCLES_PER_FRAME; c++)
-            cpu_cycle();
+    int running = 1;
+    while (running && input_poll()) {
+        for (int c = 0; c < CYCLES_PER_FRAME && running; c++)
+            running = cpu_cycle();
         if (cpu.dt) cpu.dt--;
         if (cpu.st) cpu.st--;
         if (cpu.st && !beeping) putchar('\a'); // beep
         beeping = cpu.st > 0;
-        screen_render();
+        screen_render();                       // anche dopo un errore: mostra lo stato finale
         nanosleep(&frame, NULL);
     }
 
+    if (cpu_error) {
+        char buf[32];
+        disassemble(cpu.operand.WORD, buf, sizeof buf);
+        fprintf(stderr, "CPU fermata: %s a PC=%03X (%04X %s), SP=%03X\n",
+                cpu_error, cpu.pc.WORD, cpu.operand.WORD, buf, cpu.sp.WORD);
+    }
     free(memory);
-    return 0;
+    return cpu_error ? 1 : 0;
 }
