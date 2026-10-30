@@ -319,13 +319,18 @@ cpu_cycle(void) {
     return 1;
 }
 
-//Caricamento programma
+
 static int
 rom_load(const char *path) {
+    const size_t max = STACK_START - PROGRAM_START;   // ROM NON deve invadere lo stack
     FILE *f = fopen(path, "rb");
     if (f == NULL) { perror(path); return -1; }
-    size_t size = fread(memory + PROGRAM_START, 1, STACK_START - PROGRAM_START, f);
+    size_t size = fread(memory + PROGRAM_START, 1, max, f);
+    int extra = size == max ? fgetc(f) : EOF;        // anche un solo bit in più -> ROM troppo grande
+    if (ferror(f)) { perror(path); fclose(f); return -1; }
     fclose(f);
+    if (extra != EOF) { fprintf(stderr, "%s: ROM troppo grande (max %zu byte)\n", path, max); return -1; }
+    if (size == 0)    { fprintf(stderr, "%s: ROM vuota\n", path); return -1; }
     return (int) size;
 }
 
@@ -456,7 +461,7 @@ int main(int argc, char *argv[]) {
         if (cpu.st) cpu.st--;
         if (cpu.st && !beeping) putchar('\a'); // beep
         beeping = cpu.st > 0;
-        screen_render();                       // anche dopo un errore: mostra lo stato finale
+        screen_render();
         nanosleep(&frame, NULL);
     }
 
