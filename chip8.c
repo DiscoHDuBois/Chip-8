@@ -354,26 +354,19 @@ disassemble_rom(int size) {
 
 //Terminale: input non bloccante e output con sequenze ANSI
 static struct termios term_orig;
-static int term_raw;
+static int term_saved, term_raw;
 
 static void
 term_restore(void) {
     if (term_raw) tcsetattr(STDIN_FILENO, TCSANOW, &term_orig);
+    term_raw = 0;
     printf("\x1b[?25h\n");
     fflush(stdout);
 }
-//static volatile sig_atomic_t quit nell'handler
-static void
-on_signal(int sig) {
-    (void) sig;
-    exit(0);
-}
 
 static void
-term_setup(void) {
-    atexit(term_restore);
-    signal(SIGINT, on_signal);
-    if (tcgetattr(STDIN_FILENO, &term_orig) == 0) {
+term_enter(void) {                   // raw mode, schermo pulito, cursore nascosto
+    if (term_saved) {
         struct termios raw = term_orig;
         raw.c_lflag &= ~(ICANON | ECHO);
         raw.c_cc[VMIN] = 0;
@@ -381,6 +374,50 @@ term_setup(void) {
         term_raw = tcsetattr(STDIN_FILENO, TCSANOW, &raw) == 0;
     }
     printf("\x1b[2J\x1b[?25l"); //per pulizia
+}
+
+// Gli handler impostano solo un flag: exit()/printf non sono async-signal-safe,
+// il lavoro vero lo fa il ciclo principale
+static volatile sig_atomic_t quit;     // != 0: numero del segnale di terminazione ricevuto
+static volatile sig_atomic_t suspend;  // Ctrl+Z
+static volatile sig_atomic_t resumed;  // ripresa dopo uno stop (fg/bg)
+
+static void
+on_signal(int sig) {
+    if (sig == SIGTSTP)      suspend = 1;
+    else if (sig == SIGCONT) resumed = 1;
+    else                     quit = sig;
+}
+
+static void
+sig_catch(int sig) {
+    struct sigaction sa = { 0 };
+    sa.sa_handler = on_signal;       // niente SA_RESTART: read/nanosleep si interrompono subito
+    sigemptyset(&sa.sa_mask);
+    sigaction(sig, &sa, NULL);
+}
+
+static void
+term_suspend(void) {                 // ripristina il terminale e fermati davvero
+    suspend = 0;
+    term_restore();
+    signal(SIGTSTP, SIG_DFL);
+    raise(SIGTSTP);                  // il processo resta fermo qui fino a SIGCONT
+    sig_catch(SIGTSTP);
+    resumed = 1;
+}
+
+static void
+term_setup(void) {
+    static const int sigs[] = { SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGTSTP, SIGCONT };
+    atexit(term_restore);
+    for (size_t s = 0; s < sizeof sigs / sizeof sigs[0]; s++) {
+        struct sigaction old;
+        if (sigaction(sigs[s], NULL, &old) == 0 && old.sa_handler == SIG_IGN) continue; // es. nohup
+        sig_catch(sigs[s]);
+    }
+    term_saved = tcgetattr(STDIN_FILENO, &term_orig) == 0;
+    term_enter();
 }
 
 //map
@@ -454,7 +491,12 @@ int main(int argc, char *argv[]) {
     term_setup();
 
     int running = 1;
-    while (running && input_poll()) {
+    while (running && !quit) {
+        if (suspend) term_suspend();
+        // prima di input_poll: se mentre eravamo fermi la shell ha rimesso il terminale in modo
+        // canonico, read() si bloccherebbe fino a un Invio (vale anche dopo SIGSTOP, non intercettabile)
+        if (resumed) { resumed = 0; term_enter(); }
+        if (!input_poll()) break;
         for (int c = 0; c < CYCLES_PER_FRAME && running; c++)
             running = cpu_cycle();
         if (cpu.dt) cpu.dt--;
@@ -472,5 +514,10 @@ int main(int argc, char *argv[]) {
                 cpu_error, cpu.pc.WORD, cpu.operand.WORD, buf, cpu.sp.WORD);
     }
     free(memory);
+    if (quit) {                      // ripristina e muori "di segnale", così il padre (shell, script) lo vede
+        term_restore();
+        signal(quit, SIG_DFL);
+        raise(quit);
+    }
     return cpu_error ? 1 : 0;
 }
