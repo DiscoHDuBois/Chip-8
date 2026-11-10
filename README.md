@@ -1,7 +1,8 @@
 # CHIP-8 — Calcolatori Elettronici-Assembly
 
-Emulatore CHIP-8 scritto in C99, in un unico file (`chip8.c`), senza librerie esterne.
-Il display viene disegnato nel terminale.
+Emulatore CHIP-8 scritto in C99. Il core (`chip8.c`) non usa librerie esterne
+ed è separato dai frontend, cioè da come la macchina viene mostrata:
+nel terminale, in una finestra grafica SDL2 (facoltativa) oppure senza schermo, per i test.
 
 Il programma nasce come esercizio dopo aver sostenuto l'esame di **Calcolatori Elettronici**.
 Costruire via software una CPU: registri, memoria, stack,
@@ -33,17 +34,23 @@ ma contiene tutti i concetti di una CPU reale.
 ### Compilazione
 
 ```sh
-cc -std=c99 -O2 -Wall -o chip8 chip8.c
+make            # produce ./chip8
+make test       # esegue la demo senza schermo e confronta il risultato con tests/demo.txt
+make clean      # cancella i file generati
 ```
+
+Il `Makefile` compila ogni file `.c` con queste opzioni:
 
 | Opzione      | Significato                                         |
 |--------------|-----------------------------------------------------|
 | `-std=c99`   | usa lo standard C99                                 |
 | `-O2`        | attiva le ottimizzazioni                            |
-| `-Wall`      | mostra tutti i warning principali                   |
-| `-o chip8`   | nome dell'eseguibile prodotto                       |
+| `-Wall -Wextra` | mostra i warning principali                      |
 
-Per usare un debugger (`lldb`/`gdb`) compila con `-g -O0` al posto di `-O2`.
+Se **SDL2** è installata (la cerca `pkg-config`) viene compilato anche il frontend grafico,
+altrimenti restano terminale e headless. `make SDL=0` lo esclude in ogni caso.
+
+Per usare un debugger (`lldb`/`gdb`) compila con `make clean && make CFLAGS="-g -O0"`.
 
 ### Esecuzione
 
@@ -52,9 +59,18 @@ Per usare un debugger (`lldb`/`gdb`) compila con `-g -O0` al posto di `-O2`.
 ./chip8 gioco.ch8     # esegue una ROM
 ./chip8 -d gioco.ch8  # disassembla la ROM in mnemonici assembly
 ./chip8 -d            # disassembla la demo interna
+./chip8 -f sdl gioco.ch8                         # finestra grafica SDL2
+./chip8 -f headless -n 2000 -o schermo.txt       # 2000 istruzioni senza schermo, poi salva il display
+./chip8 -h            # elenco di opzioni e frontend disponibili
 ```
 
-Serve un terminale di almeno 64 colonne con supporto UTF-8 (va bene quello UNIX).
+| Frontend (`-f`) | Cosa fa                                                              |
+|-----------------|----------------------------------------------------------------------|
+| `terminal`      | default: display e stato della CPU nel terminale                     |
+| `sdl`           | finestra ridimensionabile, pressione e rilascio dei tasti veri, beep |
+| `headless`      | nessuna attesa tra i frame: esegue `-n` istruzioni e scrive lo schermo finale come testo (`#` acceso, `.` spento) su `-o` o su stdout |
+
+Per il frontend terminale serve un terminale di almeno 64 colonne con supporto UTF-8 (va bene quello UNIX).
 
 **Tastiera**
 
@@ -68,7 +84,7 @@ Tastierino CHIP-8      Tastiera PC
 
 `ESC` (oppure `Ctrl+C`) per uscire.
 
-Sotto lo schermo l'emulatore mostra in tempo reale lo stato della CPU:
+Sotto lo schermo il frontend terminale mostra in tempo reale lo stato della CPU:
 l'ultima istruzione eseguita (in esadecimale e in assembly) e tutti i registri.
 
 ```
@@ -81,7 +97,7 @@ V8=00 V9=00 VA=00 VB=00 VC=00 VD=00 VE=00 VF=00
 
 ## I registri
 
-Nel codice tutti i registri stanno nella struttura `chip8regset`.
+Nel codice tutti i registri stanno nella struttura `chip8regset` (in `chip8.h`).
 
 ```c
 typedef struct {
@@ -223,18 +239,20 @@ Sono una versione semplificata dei timer hardware e delle periferiche di un calc
 ```
 
 Il display è tenuto in un array separato (`screen[32][64]`) e non in memoria.
+Registri, memoria, display e tastierino formano insieme la struttura `chip8`:
+tutte le funzioni del core ricevono un puntatore a questa struttura (`vm`).
 
 ---
 
 ## Il ciclo Fetch – Decode – Execute
 
-Parte importante dell'emulatore è la funzione `cpu_cycle()`, che esegue un'istruzione:
+Parte importante dell'emulatore è la funzione `chip8_cycle()`, che esegue un'istruzione:
 
 1. **Fetch** — legge 2 byte all'indirizzo `PC` e incrementa il `PC`.
    ```c
-   cpu.operand.BYTE.high = memory_read(cpu.pc.WORD);
-   cpu.operand.BYTE.low  = memory_read(cpu.pc.WORD + 1);
-   cpu.pc.WORD += 2;
+   cpu->operand.BYTE.high = memory_read(vm, cpu->pc.WORD);
+   cpu->operand.BYTE.low  = memory_read(vm, cpu->pc.WORD + 1);
+   cpu->pc.WORD += 2;
    ```
 2. **Decode** — estrae i campi dell'istruzione con maschere e shift.
    ```
@@ -389,8 +407,42 @@ Per esempio `ADD V0, 0x01` → formato `7XKK` → `X=0`, `KK=01` → `7001`.
 
 ## Mappa del codice
 
-| Funzione            | Ruolo                                                     |
-|---------------------|-----------------------------------------------------------|
+```
+chip8.h              tipi (byte, word, chip8regset, chip8), costanti, API del core
+chip8.c              core: CPU, memoria, stack, font, caricamento delle ROM
+main.c               argomenti, scelta del frontend, ciclo principale a 60 Hz
+frontend/frontend.h  interfaccia comune dei frontend (tabella di funzioni)
+frontend/terminal.c  frontend terminale
+frontend/sdl2.c      frontend grafico SDL2
+frontend/headless.c  frontend senza schermo, per i test
+tools/disasm.c       disassemblatore
+tests/demo.txt       schermo atteso da "make test"
+```
+
+| Funzione            | File | Ruolo                                                |
+|---------------------|------|------------------------------------------------------|
+| `memory_read/write` | `chip8.c` | RAM da 4 KB, indirizzi mascherati a 12 bit      |
+| `chip8_reset`       | `chip8.c` | Azzera la macchina, `PC = 0x200`, `SP = 0xEA0`, carica il font |
+| `chip8_cycle`       | `chip8.c` | Fetch – decode – execute di una istruzione      |
+| `chip8_timers`      | `chip8.c` | Decrementa `DT` e `ST` (chiamata a 60 Hz)       |
+| `stack_push/pop`    | `chip8.c` | Salvataggio e ripristino del `PC` per `CALL`/`RET`, con controllo dei limiti |
+| `cpu_halt`          | `chip8.c` | Ferma la CPU in caso di errore (es. stack overflow) |
+| `chip8_load_rom/chip8_load_demo` | `chip8.c` | Carica il programma a `0x200`      |
+| `chip8_disassemble` | `tools/disasm.c` | Codice macchina → mnemonico assembly     |
+| `chip8_disassemble_rom` | `tools/disasm.c` | Disassembla un'intera ROM (opzione `-d`) |
+| `main`              | `main.c` | Ciclo principale a 60 Hz: input, CPU, timer, audio, video |
+
+Ogni frontend riempie una struttura `frontend` con cinque funzioni, e `main` usa solo quelle:
+
+| Funzione | Ruolo                                                                  |
+|----------|------------------------------------------------------------------------|
+| `init`   | Prepara terminale o finestra                                           |
+| `poll`   | Legge la tastiera senza bloccare e aggiorna `keys[]`                   |
+| `beep`   | Accende o spegne il suono in base al sound timer                       |
+| `draw`   | Mostra `screen[]` e attende il frame successivo                        |
+| `close`  | Ripristina il terminale o chiude la finestra                           |
+
+---------------------|-----------------------------------------------------------|
 | `memory_init/read/write` | RAM da 4 KB, indirizzi mascherati a 12 bit           |
 | `cpu_reset`         | Azzera i registri, `PC = 0x200`, `SP = 0xEA0`, carica il font |
 | `cpu_cycle`         | Fetch – decode – execute di una istruzione                |
@@ -411,8 +463,9 @@ Per esempio `ADD V0, 0x01` → formato `7XKK` → `X=0`, `KK=01` → `7001`.
   tra il CHIP-8 originale e le versioni successive. Qui gli shift agiscono direttamente su
   `Vx` e `FX55`/`FX65` lasciano invariato `I`, come nella maggior parte dei giochi.
   Alcune ROM vecchie potrebbero aspettarsi l'altro comportamento.
-- **Tastiera**: il terminale non segnala il rilascio dei tasti, quindi ogni tasto resta
-  "premuto" per 10 frame.
-- **ESC**: anche le frecce inviano il carattere ESC, quindi chiudono l'emulatore.
+- **Tastiera** (frontend terminale): il terminale non segnala il rilascio dei tasti, quindi ogni
+  tasto resta "premuto" per 10 frame. Il frontend SDL2 non ha questo limite.
+- **ESC** (frontend terminale): anche le frecce inviano il carattere ESC, quindi chiudono l'emulatore.
+- **Frontend SDL2**: mostra solo il display, non lo stato della CPU.
 - **Disassemblatore**: gli sprite memorizzati in mezzo al codice vengono letti come istruzioni
   (compaiono come `DW` o come istruzioni senza senso).
