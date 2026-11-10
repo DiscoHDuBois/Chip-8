@@ -52,6 +52,35 @@ altrimenti restano terminale e headless. `make SDL=0` lo esclude in ogni caso.
 
 Per usare un debugger (`lldb`/`gdb`) compila con `make clean && make CFLAGS="-g -O0"`.
 
+### Controlli di memoria
+
+Due strumenti trovano gli errori che il C non segnala da solo: letture e scritture fuori
+dagli array, memoria usata dopo la `free`, memoria mai liberata, comportamenti indefiniti.
+Su Fedora si installano con `sudo dnf install libasan libubsan valgrind`.
+
+**AddressSanitizer + UBSan**: i controlli vengono inseriti dal compilatore, quindi si ricompila
+tutto con i flag e poi si esegue il programma normalmente. Se trova un errore lo stampa e si ferma.
+
+```sh
+make clean && make CFLAGS="-g -O1 -fsanitize=address,undefined" LDFLAGS="-fsanitize=address,undefined"
+./chip8 -f headless -n 2000 -o /dev/null gioco.ch8
+```
+
+**valgrind**: esegue il programma già compilato dentro una CPU simulata (un emulatore che
+controlla un emulatore), quindi bastano i simboli di debug. È molto più lento.
+
+```sh
+make clean && make CFLAGS="-g -O0"
+valgrind --leak-check=full ./chip8 -f headless -n 2000 -o /dev/null gioco.ch8
+```
+
+- I due strumenti non si usano insieme: tra l'uno e l'altro serve `make clean`.
+  Alla fine `make clean && make` riporta alla compilazione normale.
+- Il frontend `headless` è il più comodo perché non aspetta i 60 Hz, ma funzionano anche gli altri.
+- Se il programma viene chiuso da un segnale (`Ctrl+C` nel frontend terminale) valgrind può
+  segnalare un blocco *possibly lost* allocato da `dlopen`: viene dalla libreria SDL2,
+  non dall'emulatore, e sparisce compilando con `make SDL=0`.
+
 ### Esecuzione
 
 ```sh
