@@ -3,8 +3,6 @@ ehthumbs.db
 Desktop.ini
 *~
 .directory
-
-
 .DS_Store
 .AppleDouble
 .LSOverride
@@ -13,7 +11,6 @@ Desktop.ini
 .Trashes
 .fseventsd
 .TemporaryItems
-
 /chip8
 *.o
 *.obj
